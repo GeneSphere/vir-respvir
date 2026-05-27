@@ -1,5 +1,5 @@
 """
-Script for daily evaluation and overview of respiratory viral infections.
+Script for regular evaluation and overview of respiratory viral infections.
 
 :author: Christopher Hardt <christopher.hardt@laborberlin.com>
 
@@ -17,7 +17,6 @@ import sys
 sys.path.insert(0, '..')
 sys.path.insert(0, '/home/chardt/projects/BID/bid-korlab/')
 import korlab as kl
-#import dxPlots as dx
 import matplotlib.pyplot as plt
 from matplotlib.dates import MonthLocator, DateFormatter
 import pyexasol
@@ -26,8 +25,7 @@ from datetime import date, timedelta
 import json
 
 
-# Import smtplib for the actual sending function
-import smtplib
+import smtplib #for sending the email
 # Import the email modules we'll need
 #from email.message import EmailMessage
 from email.mime.text import MIMEText
@@ -47,8 +45,6 @@ validResults = {
     'swpos': 'positive',
 }
 
-#'MPV': ['3081', '18541'],
-#'Entero/Rhinovirus': ['2741','3901','18542','21677']
 
 # PUBLICATION SETTINGS
 LIVE = True # whether to send email to VIR and BID; if False: only send to chardt (for testing)
@@ -69,7 +65,7 @@ else:
     EMAIL_TO = ['christopher.hardt@laborberlin.com'] #['christopher.hardt@laborberlin.com'] ['bioinformatik@laborberlin.com']
     EMAIL_CC = []
 
-### RKI stuff ###
+### RKI sources (incidence data) ###
 REPORT_URL = 'https://raw.githubusercontent.com/robert-koch-institut/GrippeWeb_Daten_des_Wochenberichts/refs/heads/main/GrippeWeb_Daten_des_Wochenberichts.tsv'
 URLS = {
     'SARS-CoV-2': 'https://raw.githubusercontent.com/robert-koch-institut/COVID-19_7-Tage-Inzidenz_in_Deutschland/refs/heads/main/COVID-19-Faelle_7-Tage-Inzidenz_Bundeslaender.csv',
@@ -182,13 +178,6 @@ def getData(startDate: str, endDate: str) -> pd.DataFrame:
         print(df['GMWSTR'].value_counts()[:30])
         exit()
     else:
-        sql = f'''
-            SELECT m.gmwstr, CAST(m.anfotim AS DATE) AS datum, u.uunr FROM messwert m
-            INNER JOIN analyt u ON m.uunr = u.uunr
-            WHERE u.loinc = '94500-6' 
-            AND anfotim > '2025-01-01'
-            AND anfotim < '2026-01-01'
-        '''
         sql = f'''
             SELECT m.gmwstr, CAST(m.anfotim AS DATE) AS datum, u.uunr FROM messwert m
             INNER JOIN analyt u ON m.uunr = u.uunr
@@ -438,7 +427,6 @@ def main():
 
         if not MULTIPLEX: 
             specs = [targetResult]
-        #plt = dx.rollingMean(df, specs, 'relative')
 
         # TRENDS (as line plots as well as text)
         htmlTrends = ''
@@ -452,11 +440,11 @@ def main():
                 col = params['color']
                 arrow = '&#8680' #rightwards arrow ("flat")
                 if 'decreasing' in sentence:
-                    arrow = '&#8681' #rightwards arrow ("flat")
+                    arrow = '&#8681' #downwards arrow
                 elif 'increasing' in sentence:
-                    arrow = '&#8679' #rightwards arrow ("flat"
+                    arrow = '&#8679' #upwards arrow
                 if 'strongly' in sentence:
-                    arrow += arrow
+                    arrow += arrow # Add second arrow for strong trends
                 htmlTrends += f'<td style="color:{col}; padding: 5px;">{arrow}</td>'
                 curRate = params['current_rate_roll']
                 
@@ -478,13 +466,7 @@ def main():
         # Plot RKI incidence if available for spec
         if RKI and spec in df_rki.columns:
             print('Adding RKI data...')
-            #if spec == 'Influenza A':
-            #    spec = 'invp'
-            #ax3 = axs[plotCounter].twinx()
-            #ax3.spines["right"].set_position(('outward', 60))  # move it further right
-            #print(df_rki.head)
             ax2.bar(df_rki.index, df_rki[spec], label=f'RKI-Inzidenz (Region: {REGION})', width=0.8, color='green')
-            #ax3.set_ylabel('Inzidenz (pro 100k)')
             # extra text label on the same right axis
             ax2.text(
                 1.03, 0.5, f'RKI-Inzidenz {REGION} (pro 100k)', #position at the very right center
@@ -498,14 +480,18 @@ def main():
         # Add to arrow table 
         htmlRef = f'<td style="color:{col}; padding: 5px;">{curRate:.1f}% ({p40:.1f} - {p60:.1f})</td>'
         htmlBody += f'<tr><td style="color:{col}; padding: 5px;">{spec}</td>' + htmlTrends + htmlRef
-        #if (curRate < MINRATE) and (spec not in TOPSPECS):
+        
         if spec not in TOPSPECS:
+            inclusion = True
             if curRate < MINRATE:
-                txtAdd = f' (aktuell exkludiert, da Positivrate < {MINRATE}%)'           
+                txtAdd = f' (aktuell exkludiert, da Positivrate < {MINRATE}%)'
+                inclusion = False
             elif MINPERCENTILE == 'p60' and curRate <= p60:
                 txtAdd = f' (aktuell exkludiert, da Positivrate <= {MINPERCENTILE} von {p60:.1f}%)'
-            axs[plotCounter].set_title(spec + txtAdd)
-            htmlBody += f'<td style="font-size: 9px;">{txtAdd}</td>'
+                inclusion = False
+            if not inclusion:
+                axs[plotCounter].set_title(spec + txtAdd)
+                htmlBody += f'<td style="font-size: 9px;">{txtAdd}</td>'
         htmlBody += '</tr>'
         #Keep the handles an labels of the Corona plot (valid for all other)
         if plotCounter == 0:
@@ -519,7 +505,6 @@ def main():
     
     
     print(labels)
-    #exit()
     # Create a single legend for the entire figure
     topMargin = 0.96
     # specify order of legend labels
@@ -531,7 +516,7 @@ def main():
     # --- save to file ---
     outfile = f'{OUTDIR}/KORLAB_RespVir_{PERIOD}_{end}.png'
     plt.savefig(outfile,       # filename (extensions: .png, .pdf, .svg, etc.)
-                dpi=300,                      # dots per inch (resolution)
+                dpi=80,                      # dots per inch (resolution); default: 80
                 bbox_inches='tight')          # trim excess margins
     print(f'Plot saved to {outfile}')
     fp = open(outfile, 'rb')
